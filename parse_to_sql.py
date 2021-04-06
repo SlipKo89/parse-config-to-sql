@@ -18,20 +18,22 @@ def sql_connect(db_file_name):
 # Create tables at DB if not exists
 def sql_create_table(db_connect):
     db_cursor = db_connect.cursor()
-    db_cursor.execute("CREATE TABLE if not exists Devices (device_id integer not NULL PRIMARY KEY, hostname text, type text, vendor text, model text, sw_version text, functions text, location text, auth text, segment text, cluster text, admin_fio text, config_name text, uptime text, sum_ifaces text)")
+    db_cursor.execute("CREATE TABLE if not exists Devices (device_id integer not NULL PRIMARY KEY, hostname text, domain text, type text, vendor text, model text, sw_version text, functions text, location text, auth text, segment text, cluster text, admin_fio text, config_name text, uptime text, sum_ifaces text)")
     db_cursor.execute("CREATE TABLE if not exists Interfaces (interface_id integer not NULL PRIMARY KEY, name text, ip text, mask text, desc text, vrf text, status integer, access_vlan text, tagged_vlan text, device_id integer not null)")
     db_cursor.execute("CREATE TABLE if not exists Vlans (vlan_id integer not NULL PRIMARY KEY, vid text, name text, device_id integer not null)")
-    db_cursor.execute("CREATE VIEW if not exists test as SELECT dev.hostname,dev.type,dev.vendor,dev.model,dev.sw_version,dev.functions,dev.location,dev.auth,dev.segment,dev.cluster,dev.admin_fio,dev.config_name, dev.sum_ifaces, ifc.name,ifc.ip,ifc.mask,ifc.desc,ifc.vrf,ifc.status,ifc.access_vlan,ifc.tagged_vlan from Devices as dev,Interfaces as ifc where dev.device_id = ifc.device_id ORDER by dev.hostname")
+    db_cursor.execute("CREATE TABLE if not exists lldp (key integer not NULL PRIMARY KEY, device_id integer not null)")
+    db_cursor.execute("CREATE TABLE if not exists cdp (key integer not NULL PRIMARY KEY, device_id integer not null, neigh_hostname text, neigh_platform text, neigh_local_iface text, neigh_remote_iface text)")
+    db_cursor.execute("CREATE VIEW if not exists test as SELECT dev.hostname,dev.domain,dev.type,dev.vendor,dev.model,dev.sw_version,dev.functions,dev.location,dev.auth,dev.segment,dev.cluster,dev.admin_fio,dev.config_name, dev.sum_ifaces, ifc.name,ifc.ip,ifc.mask,ifc.desc,ifc.vrf,ifc.status,ifc.access_vlan,ifc.tagged_vlan from Devices as dev,Interfaces as ifc where dev.device_id = ifc.device_id ORDER by dev.hostname")
     db_connect.commit()
-    print("Created tables DB - OK")
+    print("Created tables DB - OK\n---------------------\n")
 
 # Insert data in DB
 def sql_insert_date(db_connect,rows,file_name):
     print("Begin insert to DB")
     db_cursor = db_connect.cursor()
     # Insert to Devices table
-    command = "INSERT INTO Devices (hostname,sw_version,config_name,cluster,location,vendor,auth,type,model,uptime,sum_ifaces) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
-    val = (str(rows['hostname']),str(rows['sw_file']),str(file_name),str(rows['cluster']),str(rows['location']),str(rows['vendor']),str(rows['auth']),str(rows['type']),str(rows['model']),str(rows['uptime']),str(rows['sum_ifaces']))
+    command = "INSERT INTO Devices (hostname,sw_version,config_name,cluster,location,vendor,auth,type,model,uptime,sum_ifaces,domain) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+    val = (str(rows['hostname']),str(rows['sw_file']),str(file_name),str(rows['cluster']),str(rows['location']),str(rows['vendor']),str(rows['auth']),str(rows['type']),str(rows['model']),str(rows['uptime']),str(rows['sum_ifaces']),str(rows['domain']))
     #print(command,val)
     db_cursor.execute(command,val)
     db_connect.commit()
@@ -67,6 +69,19 @@ def sql_insert_date(db_connect,rows,file_name):
             a += 1
     print("End Insert to DB")
 
+    # Insert to cdp table
+    b = 0
+    for i in rows['cdps']:
+        if b < rows_len:
+            command = 'INSERT INTO cdp (neigh_hostname,neigh_platform,neigh_local_iface,neigh_remote_iface,device_id) VALUES (?,?,?,?,?)'
+            val = (str(i['neigh_hostname']), str(i['neigh_platform']), str(i['neigh_local_iface']), str(i['neigh_remote_iface']),str(device_id))
+            #print(command)
+            db_cursor.execute(command, val)
+            db_connect.commit()
+            b += 1
+
+    print("End Insert to DB")
+
 # Get file list in directory with configs
 def list_files_in_dir(dir):
     file_list = os.listdir(dir)
@@ -88,6 +103,8 @@ def parse_config_files (config_dir,file):
     device_dict['vlan'] = dict()
     device_dict['uptime'] = 'N/A'
     device_dict['sum_ifaces'] = 'N/A'
+    device_dict['domain'] = ''
+    device_dict['cdps'] = list()
 
     # Open config file for parsing
     with open(config_dir + '/' + file) as file:
@@ -104,6 +121,8 @@ def parse_config_files (config_dir,file):
             if config_list[i][0] == 'hostname':
                 device_dict['hostname'] = str(config_list[i][1]).strip('\n')
                 hostname = str(config_list[i][1]).strip('\n')
+                print (hostname)
+                break
             i += 1
 
         # Search other atributes in list
@@ -116,7 +135,7 @@ def parse_config_files (config_dir,file):
                 if config_list[i][1].strip("\n") == 'run':
                     #print(config_list[i])
                     device_dict['flag_2_sh_run'] += 1
-            if config_list[i][0] == '------------------':
+            elif config_list[i][0] == '------------------':
                 if config_list[i][1] == 'show':
                     if config_list[i][2] == 'running-config':
                         #print (config_list[i])
@@ -173,6 +192,29 @@ def parse_config_files (config_dir,file):
                         sum_ifaces = sum_ifaces + str(" ".join(config_list[ifce_i]).strip('\n')) + str(", ")
                         ifce_i += 1
                     device_dict['sum_ifaces'] = sum_ifaces
+
+            # Detect CDP Neighbors
+            elif config_list[i][0] == 'Device':
+                if config_list[i][1] == 'ID:':
+                    dict_cdp_neigh = dict()
+                    dict_cdp_neigh['neigh_hostname'] = str(config_list[i][2]).strip('\n')
+                    cdp_i = i
+                    while config_list[cdp_i][0] != 'Holdtime':
+                        #print (config_list[cdp_i])
+                        if config_list[cdp_i][0] == 'Platform:':
+                            dict_cdp_neigh['neigh_platform'] = str(config_list[cdp_i][1]).strip('\n')
+                        elif config_list[cdp_i][0] == 'Interface:':
+                            dict_cdp_neigh['neigh_local_iface'] = str(config_list[cdp_i][1]).strip(',')
+                            dict_cdp_neigh['neigh_remote_iface'] = str(config_list[cdp_i][7].strip('\n'))
+                        cdp_i += 1
+                    #print(dict_cdp_neigh)
+                    device_dict['cdps'].append(dict_cdp_neigh)
+
+            # Detect domain
+            elif config_list[i][0] == 'ip':
+                if config_list[i][1] == 'domain':
+                    if config_list[i][2] == 'name':
+                        device_dict['domain'] = config_list[i][3].strip('\n')
 
             # Detect uptime
             elif config_list[i][0] == hostname:
@@ -243,7 +285,7 @@ for file_name in config_files:
     # Insert data to DB
     sql_insert_date(db_connect,device,file_name)
     # Move parsed config in archived config dir
-    os.replace(config_dir+'/'+file_name,used_config_dir+'/'+file_name)
+    #os.replace(config_dir+'/'+file_name,used_config_dir+'/'+file_name)
     print(device['uptime'])
 
 # Close DB
