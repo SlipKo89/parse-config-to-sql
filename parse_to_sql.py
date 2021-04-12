@@ -18,11 +18,11 @@ def sql_connect(db_file_name):
 # Create tables at DB if not exists
 def sql_create_table(db_connect):
     db_cursor = db_connect.cursor()
-    db_cursor.execute("CREATE TABLE if not exists Devices (device_id integer not NULL PRIMARY KEY, hostname text, domain text, type text, vendor text, model text, sw_version text, functions text, location text, auth text, segment text, cluster text, admin_fio text, config_name text, uptime text, sum_ifaces text)")
+    db_cursor.execute("CREATE TABLE if not exists Devices (device_id integer not NULL PRIMARY KEY, hostname text, domain text, type text, vendor text, model text, sw_version text, functions text, location text, auth text, segment text, cluster text, admin_fio text, config_name text, uptime text, sum_ifaces text,lldp integer)")
     db_cursor.execute("CREATE TABLE if not exists Interfaces (interface_id integer not NULL PRIMARY KEY, name text, ip text, mask text, desc text, vrf text, status integer, access_vlan text, tagged_vlan text, device_id integer not null)")
     db_cursor.execute("CREATE TABLE if not exists Vlans (vlan_id integer not NULL PRIMARY KEY, vid text, name text, device_id integer not null)")
-    db_cursor.execute("CREATE TABLE if not exists lldp (key integer not NULL PRIMARY KEY, device_id integer not null)")
-    db_cursor.execute("CREATE TABLE if not exists cdp (key integer not NULL PRIMARY KEY, device_id integer not null, neigh_hostname text, neigh_platform text, neigh_local_iface text, neigh_remote_iface text)")
+    #db_cursor.execute("CREATE TABLE if not exists lldp (key integer not NULL PRIMARY KEY, device_id integer not null)")
+    db_cursor.execute("CREATE TABLE if not exists cdp (key integer not NULL PRIMARY KEY, device_id integer not null, local_hostname text, neigh_hostname text, neigh_platform text, neigh_local_iface text, neigh_local_ip text, neigh_remote_iface text, neigh_remote_ip text)")
     db_cursor.execute("CREATE VIEW if not exists test as SELECT dev.hostname,dev.domain,dev.type,dev.vendor,dev.model,dev.sw_version,dev.functions,dev.location,dev.auth,dev.segment,dev.cluster,dev.admin_fio,dev.config_name, dev.sum_ifaces, ifc.name,ifc.ip,ifc.mask,ifc.desc,ifc.vrf,ifc.status,ifc.access_vlan,ifc.tagged_vlan from Devices as dev,Interfaces as ifc where dev.device_id = ifc.device_id ORDER by dev.hostname")
     db_connect.commit()
     print("Created tables DB - OK\n---------------------\n")
@@ -32,8 +32,8 @@ def sql_insert_date(db_connect,rows,file_name):
     print("Begin insert to DB")
     db_cursor = db_connect.cursor()
     # Insert to Devices table
-    command = "INSERT INTO Devices (hostname,sw_version,config_name,cluster,location,vendor,auth,type,model,uptime,sum_ifaces,domain) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
-    val = (str(rows['hostname']),str(rows['sw_file']),str(file_name),str(rows['cluster']),str(rows['location']),str(rows['vendor']),str(rows['auth']),str(rows['type']),str(rows['model']),str(rows['uptime']),str(rows['sum_ifaces']),str(rows['domain']))
+    command = "INSERT INTO Devices (hostname,sw_version,config_name,cluster,location,vendor,auth,type,model,uptime,sum_ifaces,domain,lldp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    val = (str(rows['hostname']),str(rows['sw_file']),str(file_name),str(rows['cluster']),str(rows['location']),str(rows['vendor']),str(rows['auth']),str(rows['type']),str(rows['model']),str(rows['uptime']),str(rows['sum_ifaces']),str(rows['domain']),rows['lldp'])
     #print(command,val)
     db_cursor.execute(command,val)
     db_connect.commit()
@@ -105,6 +105,7 @@ def parse_config_files (config_dir,file):
     device_dict['sum_ifaces'] = 'N/A'
     device_dict['domain'] = ''
     device_dict['cdps'] = list()
+    device_dict['lldp'] = 0
 
     # Open config file for parsing
     with open(config_dir + '/' + file) as file:
@@ -187,9 +188,10 @@ def parse_config_files (config_dir,file):
                     # Get interfaces summary info
                     ifce_i = i + 1
                     sum_ifaces = str()
-                    while config_list[ifce_i][0] != '\n' and (config_list[ifce_i][-1].strip('\n') == 'interface' or config_list[ifce_i][-1].strip('\n') == 'interfaces' or config_list[ifce_i][-1].strip('\n') == 'interface(s)' or config_list[ifce_i][-1].strip('\n') == 'port' or config_list[ifce_i][-1].strip('\n') == 'ports' or config_list[ifce_i][-1].strip('\n') == 'port(s)'):
-                    #    print(config_list[ifce_i])
-                        sum_ifaces = sum_ifaces + str(" ".join(config_list[ifce_i]).strip('\n')) + str(", ")
+                    while config_list[ifce_i][0] != '\n':
+                        if config_list[ifce_i][0].isdigit() == True:
+                            #print(config_list[ifce_i])
+                            sum_ifaces = sum_ifaces + str(" ".join(config_list[ifce_i]).strip('\n')) + str(", ")
                         ifce_i += 1
                     device_dict['sum_ifaces'] = sum_ifaces
 
@@ -202,7 +204,7 @@ def parse_config_files (config_dir,file):
                     while config_list[cdp_i][0] != 'Holdtime':
                         #print (config_list[cdp_i])
                         if config_list[cdp_i][0] == 'Platform:':
-                            dict_cdp_neigh['neigh_platform'] = str(config_list[cdp_i][1]).strip('\n')
+                            dict_cdp_neigh['neigh_platform'] = str(config_list[cdp_i][2]).strip(',')
                         elif config_list[cdp_i][0] == 'Interface:':
                             dict_cdp_neigh['neigh_local_iface'] = str(config_list[cdp_i][1]).strip(',')
                             dict_cdp_neigh['neigh_remote_iface'] = str(config_list[cdp_i][7].strip('\n'))
@@ -215,6 +217,11 @@ def parse_config_files (config_dir,file):
                 if config_list[i][1] == 'domain':
                     if config_list[i][2] == 'name':
                         device_dict['domain'] = config_list[i][3].strip('\n')
+
+            # Detect lldp
+            elif config_list[i][0] == 'lldp':
+                if config_list[i][1].strip('\n') == 'run':
+                    device_dict['lldp'] = 1
 
             # Detect uptime
             elif config_list[i][0] == hostname:
